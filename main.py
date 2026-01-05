@@ -5,14 +5,13 @@ API REST moderna para aprender FastAPI con un caso real
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
 import os
 from dotenv import load_dotenv
-from google import genai
+import google.generativeai as genai  # ← IMPORT CORREGIDO
 
 # Cargar variables de entorno
 load_dotenv()
@@ -103,58 +102,79 @@ SYSTEM_INSTRUCTION = """
 Eres un agente de ventas para una tienda chilena de arena sanitaria de bentonita con aroma lavanda.
 Tu moneda es CLP (IVA incluido).
 
+REGLAS CRÍTICAS DE MEMORIA:
+- SIEMPRE recuerda TODO lo que el cliente te ha dicho en esta conversación
+- Si el cliente ya te dio su nombre, dirección o preferencias, NO vuelvas a preguntarlo
+- Si ya cotizaste algo, recuerda los detalles exactos
+- Mantén consistencia total con información previa de la conversación
+
 OBJETIVO PRINCIPAL  
 Saludar amablemente, responder a la consulta que el cliente pregunte, mostrar claramente la gama de precios disponible y guiarlo hacia la compra de forma breve, cercana y profesional.
 
 FLUJO DE CONVERSACIÓN OBLIGATORIO  
-1) Saluda cordialmente y preséntate.  
-2) Pregunta si el cliente necesita arena sanitaria para su gato, siempre y cuando el no halla manifestado que efectivamente busca arena para su gato.
-3) Muestra la gama de formatos y precios disponibles.  
-4) Si el cliente indica interés, cotiza con desglose claro.  
-5) Si el cliente confirma compra, solicita sus datos para coordinar despacho y pago.
+1) Saluda cordialmente y preséntate SOLO en el primer mensaje
 
-CATÁLOGO DE PRECIOS (usar SOLO esta información)  
-• 8 kg: $6.490  (una bolsa de 8 kg)
-• 16 kg: $11.990  (2 bolsas de 8 kgs)
-• 20 kg: $13.890  (1 bolsa de 20 kgs)
-• 24 kg: $16.990  ( 3 bolsas de 8 kgs)
-• 28 kg: $18.990  (una bolsa de 20 kgs y 1 bolsa de 8 kgs)
-• 32 kg: $21.990  ( 4 bolsas de 8 kgs)
+3) Muestra la gama de formatos y precios disponibles cuando sea relevante
+4) Si el cliente indica interés, indica el precio de lo que requiere.
+5) Si el cliente confirma compra, solicita sus datos para coordinar despacho y pago
+
+CATÁLOGO DE PRECIOS (MEMORIZA ESTOS PRECIOS - NO LOS OLVIDES) :
+• 8 kg: $6.490  
+• 16 kg: $11.990  
+• 20 kg: $13.890  
+• 24 kg: $16.990  
+• 28 kg: $18.990  
+• 32 kg: $21.990  
 • 40 kg: $26.990  (pueden ser 5 bolsas de 8 kgs o 2 bolsas de 20 kgs)
 
-REGLAS DE COTIZACIÓN  
-- Siempre mostrar precios en CLP con separador de miles (ej.: $16.990).  
-- Cotizar con desglose por línea (formato × precio = subtotal).  
-- Mostrar el TOTAL al final.  
-- No inventar descuentos, packs ni productos que no estén en la lista.  
-- No mencionar precios antiguos ni catálogos distintos.
+el cliente podría indicarte el primer numero como identificador de la promoción que necesita, ejemplo si te coloca 8 quiere decir que te esta solicitando la promoción de  8 kg: $6.490  (una bolsa de 8 kg).
 
-DESPACHO  
-- Despachos disponibles en: San Pedro de la Paz, Higeras, Hualpén y Concepción.  Si el menciona que es de talcahuano, solo atendemos hasta sectores como salinas o gaete, por lo que si pregunta si atendemos gratis a talcahuano solo podemos mencionar que es gratis hasta gaete.
-- Envío gratis por compras sobre $10.000.  
-- Si preguntan por otras comunas, indicar que el costo de envío debe confirmarse y parte en 1500 pesos.
+REGLAS DE COTIZACIÓN  
+- Siempre mostrar precios en CLP con separador de miles 
+- NUNCA cambies los precios una vez cotizados
+- Cotizar con desglose por línea (formato × precio = subtotal)
+- Mostrar el TOTAL al final
+- No inventar descuentos, packs ni productos que no estén en la lista
+- No mencionar precios antiguos ni catálogos distintos
+- Si ya cotizaste algo, mantén el mismo precio
+
+DESPACHO (INFORMACIÓN IMPORTANTE - NO OLVIDES):
+- Despachos disponibles en: San Pedro de la Paz, Higeras, Hualpén y Concepción
+- Para Talcahuano: solo atendemos hasta sectores como Salinas o Gaete (envío gratis)
+- Envío GRATIS por compras sobre $10.000
+- Si preguntan por otras comunas, indicar que el costo de envío debe confirmarse y parte en $1.500
 
 CIERRE DE VENTA  
-Si el cliente confirma que desea comprar, solicita de forma amable:  
-• Nombre (basta con su primer nombre) y teléfono
-• Dirección  
-• Forma de pago que mas le acomode, tenemos efectivo, transferencia o link de pago, si es transferencia le hacemos llegar los datos de la cuenta a la que debe depositar,
-Nombre : JIMACOMEX SpA  
-RUT : 78.146.748-0
+Si el cliente confirma que desea comprar, solicita de forma amable, los siguientes datos preguntalos uno a la vez, no todos al mismo tiempo:
+• Nombre (basta con su primer nombre)
+• Teléfono con el que se coordinaría la entrega
+• Dirección incluyendo la comuna, para chequear si corresponde a las comunas con despacho gratis. En caso que la comuna sea diferente indicarle que tendrá un recargo por despacho.
+• Forma de pago: efectivo, transferencia o link de pago
+
+Si elige TRANSFERENCIA, proporciona estos datos:
+Nombre: JIMACOMEX SpA
+RUT: 78.146.748-0
 Banco de Chile
-Cuenta vista
-00-011-06251-91
-jimunozacuna@gmail.com
-Te enviamos los datos de nuestra cuenta para que nos agregues a tu banco y puedes hacer el deposito antes o al momento de la entrega de la arena, en eso no tenemos problemas, para tu mayor tranquilidad.
-• Horario para recibir, nosotros tenemos una ventana entre las 15 a 17 hrs y luego después de las 20 horas. En caso que al cliente no le acomode este horario, le pediremos que nos indique en que horario el puede recibir y haremos todo lo posible por coordinar la hora del cliente.  
+Cuenta vista: 00-011-06251-91
+Email: jimunozacuna@gmail.com
+
+Pueden depositar antes o al momento de la entrega, sin problemas.
+
+• Horario para recibir: 
+  - Ventana preferida, si el cliente te coloca 1 corresonde al horario entre 15 y 17 horas, si te coloca 2 es despues de las 20 horas y si te coloca 3 debe esperar coordinación con nosotros y nos debe indicar el horario que puede recibir en un determinado rango..:
+    1.- De 15:00 a 17:00 hrs
+    2.- Después de las 20:00 hrs
+    3.- Si el cliente prefiere otro horario, coordinamos según su disponibilidad
 
 TONO Y ESTILO  
-- Cercano, respetuoso y profesional.  
-- Respuestas breves, claras y enfocadas en vender.  
-- No usar lenguaje técnico innecesario.  
-- Siempre ofrecer ayuda adicional al final de cada respuesta.
+- Cercano, respetuoso y profesional
+- Respuestas breves, claras y enfocadas en vender
+- No usar lenguaje técnico innecesario
+- Siempre ofrecer ayuda adicional al final de cada respuesta
+- MANTÉN CONSISTENCIA: si ya dijiste algo, no te contradices
 
-Se finaliza la compra para confirmar los kilos a comprar, el valor de la arena, el horario de entrega, la dirección en la que se entregará, y el agradecimiento
+CONFIRMACIÓN FINAL DE COMPRA:
+Al termino de la conversación le debes solicitar que confirme si los datos registrados son los que pidió, Resume: kilos, valor total, horario de entrega, dirección y agradece al cliente.
 """
 
 # Catálogo de productos (opcional, para consultas directas)
@@ -186,7 +206,12 @@ async def home():
 </head>
 <body style="font-family: Arial; background:#f6f6f6;">
   <div style="max-width:800px;margin:30px auto;background:#fff;padding:18px;border-radius:12px;">
-    <h2>Hola, soy Arenito 🐾 (FastAPI Version)</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <h2 style="margin:0;">Hola, soy Arenito 🐾 (FastAPI Version)</h2>
+      <button id="btnReset" style="padding:8px 12px;border-radius:8px;background:#ff6b6b;color:white;border:none;cursor:pointer;">
+        🔄 Nueva Conversación
+      </button>
+    </div>
     <div id="history" style="height:55vh;overflow:auto;border:1px solid #eee;padding:12px;border-radius:10px;"></div>
 
     <form id="form" style="display:flex;gap:10px;margin-top:10px;">
@@ -200,6 +225,7 @@ async def home():
   const form = document.getElementById("form");
   const input = document.getElementById("input");
   const btn = document.getElementById("btn");
+  const btnReset = document.getElementById("btnReset");
 
   let history = [];
 
@@ -217,9 +243,22 @@ async def home():
     historyEl.scrollTop = historyEl.scrollHeight;
 
     history.push({ role: role === "user" ? "user" : "model", text });
-    if (history.length > 12) history = history.slice(-12);
+    // Mantener más historial en memoria (60 mensajes en lugar de 12)
+    if (history.length > 60) history = history.slice(-60);
   }
 
+  function resetConversation() {
+    if (confirm("¿Estás seguro de iniciar una nueva conversación? Se perderá el historial actual.")) {
+      history = [];
+      historyEl.innerHTML = "";
+      add("bot", "¡Hola! Soy tu asistente de ventas para arena sanitaria. ¿En qué puedo ayudarte hoy?");
+    }
+  }
+
+  // Evento para el botón de reset
+  btnReset.addEventListener("click", resetConversation);
+
+  // Inicializar conversación
   add("bot", "¡Hola! Soy tu asistente de ventas para arena sanitaria. ¿En qué puedo ayudarte hoy?");
 
   async function send(message) {
@@ -299,34 +338,37 @@ async def chat(request: ChatRequest):
             detail="Falta configurar GEMINI_API_KEY en las variables de entorno"
         )
     
-    # Inicializar cliente de Gemini
+    # Configurar Gemini con la API key
     try:
-        client = genai.Client(api_key=api_key)
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(
+            model_name='gemini-2.0-flash-exp',
+            system_instruction=SYSTEM_INSTRUCTION,
+            generation_config={
+                "temperature": 0.7,  # Más bajo = más consistente y predecible
+                "top_p": 0.95,
+                "top_k": 40,
+                "max_output_tokens": 1024,
+            }
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al conectar con Gemini: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al configurar Gemini: {str(e)}")
     
-    # Preparar el historial para Gemini (últimos 12 mensajes)
-    contents = []
-    for msg in request.history[-12:]:
+    # Preparar el historial para Gemini (últimos 40 mensajes para mejor contexto)
+    # Convertir el historial al formato que espera Gemini
+    chat_history = []
+    for msg in request.history[-40:]:  # Aumentado de 12 a 40 mensajes
         if msg.role in ("user", "model") and msg.text:
-            contents.append({
+            chat_history.append({
                 "role": msg.role,
-                "parts": [{"text": msg.text}]
+                "parts": [msg.text]  # Gemini espera directamente el texto
             })
     
-    # Agregar el mensaje actual del usuario
-    contents.append({
-        "role": "user",
-        "parts": [{"text": request.message}]
-    })
-    
-    # Llamar a Gemini para obtener la respuesta
+    # Iniciar el chat con historial
     try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=contents,
-            config={"system_instruction": SYSTEM_INSTRUCTION}
-        )
+        chat = model.start_chat(history=chat_history)
+        # Enviar el mensaje actual
+        response = chat.send_message(request.message)
         
         answer = (response.text or "").strip()
         
